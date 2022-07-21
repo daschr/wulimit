@@ -11,7 +11,16 @@
 
 #define STD_PROCLIST_ELEMS 4048
 
-void print_last_error_message(void) {
+#ifdef DEBUG
+#define BLAME(X) fprintf(stderr, X)
+#define print_last_error_message() _print_last_error_message()
+#else
+#define BLAME(X)
+#define print_last_error_message()
+#endif
+
+
+void _print_last_error_message(void) {
     wchar_t *emsg=NULL;
 
     if(!FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER|FORMAT_MESSAGE_FROM_SYSTEM, NULL, GetLastError(), 0, (wchar_t *) &emsg, 0, NULL))
@@ -25,7 +34,7 @@ PTOKEN_USER get_token_user(HANDLE proc_handle, PTOKEN_USER token_user, unsigned 
     HANDLE token_handle=NULL;
 
     if(!OpenProcessToken(proc_handle, TOKEN_READ, &token_handle)) {
-        fprintf(stderr, "[get_token_user] failed getting process token!\n");
+        BLAME("[get_token_user] failed getting process token!\n");
         goto fail;
     }
 
@@ -39,7 +48,7 @@ PTOKEN_USER get_token_user(HANDLE proc_handle, PTOKEN_USER token_user, unsigned 
     }
 
     if(!GetTokenInformation(token_handle, TokenUser, token_user, needed_token_user_size, token_user_size)) {
-        fprintf(stderr, "[get_token_user] failed getting token information!\n");
+        BLAME("[get_token_user] failed getting token information!\n");
         goto fail;
     }
 
@@ -64,12 +73,12 @@ uint8_t is_process_owner(PTOKEN_USER token_user, unsigned long pid) {
     unsigned long proc_token_user_size=0;
 
     if((proc_handle=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ, 0, pid))==NULL) {
-//        fprintf(stderr, "[is_process_owner] failed getting process handle!\n");
+        BLAME("[is_process_owner] failed getting process handle!\n");
         goto fail;
     }
 
     if((proc_token_user=get_token_user(proc_handle, proc_token_user, &proc_token_user_size))==NULL) {
-//        fprintf(stderr, "[is_process_owner] failed getting user token!\n");
+        BLAME("[is_process_owner] failed getting user token!\n");
         goto fail;
     }
 
@@ -82,7 +91,7 @@ uint8_t is_process_owner(PTOKEN_USER token_user, unsigned long pid) {
 
 fail:
 
-//	print_last_error_message();
+    print_last_error_message();
 
     if(proc_handle)
         CloseHandle(proc_handle);
@@ -97,12 +106,12 @@ uint8_t add_pid_to_job(HANDLE job, unsigned long pid) {
     HANDLE proc_handle=NULL;
 
     if((proc_handle=OpenProcess(PROCESS_SET_QUOTA|PROCESS_TERMINATE, 0, pid))==NULL) {
-        fprintf(stderr, "[add_pid_to_job] failed getting process handle!\n");
+        BLAME("[add_pid_to_job] failed getting process handle!\n");
         goto fail;
     }
 
     if(!AssignProcessToJobObject(job, proc_handle)) {
-        fprintf(stderr, "[add_pid_to_job] failed assiging process to job!\n");
+        BLAME("[add_pid_to_job] failed assiging process to job!\n");
         goto fail;
     }
 
@@ -125,7 +134,7 @@ uint8_t get_username_from_ptoken_user(PTOKEN_USER token_user, wchar_t *username,
 
     SID_NAME_USE sidNameUse;
     if(!LookupAccountSidW(NULL, token_user->User.Sid, username, &username_s, domain, &domain_s, &sidNameUse)) {
-        fprintf(stderr, "failed looking up username!\n");
+        BLAME("failed looking up username!\n");
         print_last_error_message();
         return 0;
     }
@@ -141,18 +150,18 @@ uint8_t get_process_owner(unsigned long pid, char *owner, unsigned long owner_s,
     unsigned long token_user_size=0;
 
     if((proc_handle=OpenProcess(PROCESS_QUERY_INFORMATION|PROCESS_VM_READ, 0, pid))==NULL) {
-        fprintf(stderr, "failed getting process handle!\n");
+        BLAME("failed getting process handle!\n");
         goto fail;
     }
 
     if((token_user=get_token_user(proc_handle, token_user, &token_user_size))==NULL) {
-        fprintf(stderr, "failed getting user token!\n");
+        BLAME("failed getting user token!\n");
         goto fail;
     }
 
     SID_NAME_USE sidNameUse;
     if(!LookupAccountSidA(NULL, token_user->User.Sid, owner, &owner_s, domain, &domain_s, &sidNameUse)) {
-        fprintf(stderr, "failed loolking up account sid!\n");
+        BLAME("failed loolking up account sid!\n");
         goto fail;
     }
 
@@ -183,22 +192,25 @@ inline char *get_current_sid(void) {
     return sid;
 }
 
-uint8_t limit_procs(unsigned long mem_per_job, unsigned long mem_per_proc) {
+uint8_t limit_procs(uint8_t mask, unsigned long mem_per_job, unsigned long mem_per_proc) {
     char *sid;
     unsigned long current_user_token_size=0;
     PTOKEN_USER current_user_token=get_token_user(GetCurrentProcess(), NULL, &current_user_token_size);
+    if(!current_user_token) return 0;
     ConvertSidToStringSidA(current_user_token->User.Sid, &sid);
-	
-	printf("using JOBNAME: %s\n", sid);
+
+#ifdef DEBUG
+    printf("using JOBNAME: %s\n", sid);
+#endif
     HANDLE job;
     if((job=CreateJobObjectA(NULL, sid))==NULL) {
-        fprintf(stderr, "[limit_procs] failed creating jobobject!\n");
+        BLAME("[limit_procs] failed creating jobobject!\n");
         LocalFree(sid);
         return 0;
     }
     LocalFree(sid);
 
-	// add processes to job
+    // add processes to job
 
     unsigned long procs_size=sizeof(DWORD)*STD_PROCLIST_ELEMS;
     unsigned long *procs=malloc(procs_size);
@@ -206,7 +218,7 @@ uint8_t limit_procs(unsigned long mem_per_job, unsigned long mem_per_proc) {
 
     if(!procs) return 0;
     if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
-        fprintf(stderr, "[limit_procs] Error while enumerating processes!\n");
+        BLAME("[limit_procs] Error while enumerating processes!\n");
         return 0;
     }
 
@@ -217,98 +229,72 @@ uint8_t limit_procs(unsigned long mem_per_job, unsigned long mem_per_proc) {
         if(!(procs=malloc(procs_size))) return 0;
 
         if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
-            fprintf(stderr, "[limit_procs] Error while enumerating processes!\n");
+            BLAME("[limit_procs] Error while enumerating processes!\n");
             return 0;
         }
     }
 
     procs_size_used/=sizeof(unsigned long);
 
-    printf("[limit_procs] num_processes: %ld\n", procs_size_used);
     for(unsigned long i=0; i<procs_size_used; ++i) {
         if(is_process_owner(current_user_token, procs[i])) {
+#ifdef DEBUG
             printf("%ld owned by current user, adding to job\n", procs[i]);
+#endif
             add_pid_to_job(job, procs[i]);
         }
     }
 
+    free(current_user_token);
     free(procs);
 
     // configure limits
 
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits=malloc(sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
     memset(limits, 0, sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
-    limits->JobMemoryLimit=mem_per_job;
-	limits->ProcessMemoryLimit=mem_per_proc;
-    limits->BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_PROCESS_MEMORY|JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION|JOB_OBJECT_LIMIT_JOB_MEMORY;
+    limits->BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
 
-	if(!SetInformationJobObject(job, JobObjectExtendedLimitInformation, limits, sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))) {
-        fprintf(stderr, "[limit_procs] failed configuring limits!\n");
+    if(mask&1) {
+#ifdef DEBUG
+        printf("limits->JobMemoryLimit=mem_per_job=%lu\n", mem_per_job);
+#endif
+        limits->JobMemoryLimit=mem_per_job;
+        limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY;
+    }
+
+    if(mask&2) {
+#ifdef DEBUG
+        printf("limits->ProcessMemoryLimit=%lu\n", mem_per_proc);
+#endif
+        limits->ProcessMemoryLimit=mem_per_proc;
+        limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    }
+
+    if(!SetInformationJobObject(job, JobObjectExtendedLimitInformation, limits, sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))) {
+        BLAME("[limit_procs] failed configuring limits!\n");
         free(limits);
         return 0;
     }
     free(limits);
 
-	CloseHandle(job);
-    return 1;
-}
-
-uint8_t list_procs(void) {
-    unsigned long procs_size=sizeof(DWORD)*STD_PROCLIST_ELEMS;
-    unsigned long *procs=malloc(procs_size);
-    unsigned long procs_size_used=0;
-
-    if(!procs) return 0;
-    if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
-        fprintf(stderr, "Error while enumerating processes!\n");
-        return 0;
-    }
-
-    while(procs_size<=procs_size_used) {
-        procs_size<<=1;
-        free(procs);
-
-        if(!(procs=malloc(procs_size))) return 0;
-
-        if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
-            fprintf(stderr, "Error while enumerating processes!\n");
-            return 0;
-        }
-    }
-
-    procs_size_used/=sizeof(unsigned long);
-
-    unsigned long current_user_token_size=0;
-    PTOKEN_USER current_user_token=get_token_user(GetCurrentProcess(), NULL, &current_user_token_size);
-
-    wchar_t owner[_MAX_PATH], domain[_MAX_PATH];
-    wchar_t *sid;
-
-    get_username_from_ptoken_user(current_user_token, owner, _MAX_PATH, domain, _MAX_PATH);
-    ConvertSidToStringSidW(current_user_token->User.Sid, &sid);
-
-    wprintf(L"Current SID: %ls@%ls (%ls)\n", owner, domain, sid);
-    LocalFree(sid);
-
-
-    printf("num_processes: %ld\n", procs_size_used);
-    for(unsigned long i=0; i<procs_size_used; ++i) {
-        //get_process_owner(procs[i], owner, _MAX_PATH, domain, _MAX_PATH);
-        if(is_process_owner(current_user_token, procs[i])) {
-            printf("%ld owned by current user\n", procs[i]);
-        }
-        /*else{
-                    printf("%ld owned by %s@%s\n", procs[i], owner, domain);
-        		}
-        */
-    }
-
-    free(procs);
-
+    CloseHandle(job);
+    puts("limits set");
     return 1;
 }
 
 int main(int ac, char *as[]) {
-    limit_procs(1e9, 500e6);
+    if(ac<2||ac>3) {
+        fprintf(stderr, "Usage: %s [per session limit (MB)] [per process limit (MB)]\n", as[1]);
+        return 1;
+    }
+
+    unsigned long limits[2]= {0,0};
+    for(uint8_t i=1; i<ac; ++i)
+        limits[i-1]=strtoul(as[i], NULL, 10)*1e6;
+
+    const uint8_t m=ac==3?0x3:0x1;
+
+    limit_procs(m, limits[0], limits[1]);
+
     return 0;
 }
