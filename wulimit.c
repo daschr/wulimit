@@ -1,6 +1,7 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <getopt.h>
 
 #include <windows.h>
 #include <psapi.h>
@@ -192,7 +193,7 @@ inline char *get_current_sid(void) {
     return sid;
 }
 
-uint8_t limit_procs(uint8_t mask, unsigned long mem_per_job, unsigned long mem_per_proc) {
+uint8_t limit_procs(JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits) {
     char *sid;
     unsigned long current_user_token_size=0;
     PTOKEN_USER current_user_token=get_token_user(GetCurrentProcess(), NULL, &current_user_token_size);
@@ -248,53 +249,55 @@ uint8_t limit_procs(uint8_t mask, unsigned long mem_per_job, unsigned long mem_p
     free(current_user_token);
     free(procs);
 
-    // configure limits
+    if(!SetInformationJobObject(job, JobObjectExtendedLimitInformation, limits,
+                                sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))) {
+        BLAME("[limit_procs] failed configuring limits!\n");
+        return 0;
+    }
+
+    CloseHandle(job);
+#ifdef DEBUG
+    puts("limits set");
+#endif
+    return 1;
+}
+
+static inline void help_msg(const char *name) {
+    fprintf(stderr, "Usage: %s -v [MB] -V [MB]\n", name);
+    fprintf(stderr, "\t-v [mem] - per process max size [MB] of virtual memory; see win32 ProcessMemoryLimit\n"
+            "\t-V [mem] - max size [MB] of virtual memory of the whole session; see win32 JobMemoryLimit\n");
+}
+
+int main(int ac, char *as[]) {
+    if(ac<2) {
+        help_msg(as[0]);
+        return EXIT_FAILURE;
+    }
 
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits=malloc(sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
     memset(limits, 0, sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
     limits->BasicLimitInformation.LimitFlags=JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
 
-    if(mask&1) {
-#ifdef DEBUG
-        printf("limits->JobMemoryLimit=mem_per_job=%lu\n", mem_per_job);
-#endif
-        limits->JobMemoryLimit=mem_per_job;
-        limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY;
+    int opt;
+    while((opt=getopt(ac, as, "v:V:"))!=-1) {
+        switch(opt) {
+        case 'v':
+            limits->ProcessMemoryLimit=strtoul(optarg, NULL,  10);
+            limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            break;
+        case 'V':
+            limits->JobMemoryLimit=strtoul(optarg, NULL,  10);
+            limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY;
+            break;
+        default:
+            help_msg(as[0]);
+            free(limits);
+            return EXIT_FAILURE;
+        }
     }
 
-    if(mask&2) {
-#ifdef DEBUG
-        printf("limits->ProcessMemoryLimit=%lu\n", mem_per_proc);
-#endif
-        limits->ProcessMemoryLimit=mem_per_proc;
-        limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-    }
+    limit_procs(limits);
 
-    if(!SetInformationJobObject(job, JobObjectExtendedLimitInformation, limits, sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))) {
-        BLAME("[limit_procs] failed configuring limits!\n");
-        free(limits);
-        return 0;
-    }
     free(limits);
-
-    CloseHandle(job);
-    puts("limits set");
-    return 1;
-}
-
-int main(int ac, char *as[]) {
-    if(ac<2||ac>3) {
-        fprintf(stderr, "Usage: %s [per session limit (MB)] [per process limit (MB)]\n", as[1]);
-        return 1;
-    }
-
-    unsigned long limits[2]= {0,0};
-    for(uint8_t i=1; i<ac; ++i)
-        limits[i-1]=strtoul(as[i], NULL, 10)*1e6;
-
-    const uint8_t m=ac==3?0x3:0x1;
-
-    limit_procs(m, limits[0], limits[1]);
-
-    return 0;
+    return EXIT_SUCCESS;
 }
