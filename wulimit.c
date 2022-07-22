@@ -12,6 +12,8 @@
 
 #define STD_PROCLIST_ELEMS 4048
 
+#define DEBUG
+
 #ifdef DEBUG
 #define BLAME(X) fprintf(stderr, X)
 #define print_last_error_message() _print_last_error_message()
@@ -282,11 +284,11 @@ int main(int ac, char *as[]) {
     while((opt=getopt(ac, as, "v:V:"))!=-1) {
         switch(opt) {
         case 'v':
-            limits->ProcessMemoryLimit=strtoul(optarg, NULL,  10);
+            limits->ProcessMemoryLimit=strtoul(optarg, NULL,  10)*1e6;
             limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_PROCESS_MEMORY;
             break;
         case 'V':
-            limits->JobMemoryLimit=strtoul(optarg, NULL,  10);
+            limits->JobMemoryLimit=strtoul(optarg, NULL,  10)*1e6;
             limits->BasicLimitInformation.LimitFlags|=JOB_OBJECT_LIMIT_JOB_MEMORY;
             break;
         default:
