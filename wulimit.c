@@ -12,8 +12,6 @@
 
 #define STD_PROCLIST_ELEMS 4048
 
-#define DEBUG
-
 #ifdef DEBUG
 #define BLAME(X) fprintf(stderr, X)
 #define print_last_error_message() _print_last_error_message()
