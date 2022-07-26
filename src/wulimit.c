@@ -194,10 +194,15 @@ inline char *get_current_sid(void) {
 }
 
 uint8_t limit_procs(JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits) {
-    char *sid;
+    char *sid=NULL;
     unsigned long current_user_token_size=0;
-    PTOKEN_USER current_user_token=get_token_user(GetCurrentProcess(), NULL, &current_user_token_size);
-    if(!current_user_token) return 0;
+    PTOKEN_USER current_user_token=NULL;
+    unsigned long procs_size=sizeof(DWORD)*STD_PROCLIST_ELEMS;
+    unsigned long *procs=NULL;
+    unsigned long procs_size_used=0;
+
+    if(!(current_user_token=get_token_user(GetCurrentProcess(), NULL, &current_user_token_size)))
+        return 0;
     ConvertSidToStringSidA(current_user_token->User.Sid, &sid);
 
 #ifdef DEBUG
@@ -206,32 +211,33 @@ uint8_t limit_procs(JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits) {
     HANDLE job;
     if((job=CreateJobObjectA(NULL, sid))==NULL) {
         BLAME("[limit_procs] failed creating jobobject!\n");
-        LocalFree(sid);
-        return 0;
+        print_last_error_message();
+        goto fail;
     }
+
     LocalFree(sid);
+    sid=NULL;
 
     // add processes to job
+    if(!(procs=malloc(procs_size)))
+        goto fail;
 
-    unsigned long procs_size=sizeof(DWORD)*STD_PROCLIST_ELEMS;
-    unsigned long *procs=malloc(procs_size);
-    unsigned long procs_size_used=0;
-
-    if(!procs) return 0;
     if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
         BLAME("[limit_procs] Error while enumerating processes!\n");
-        return 0;
+        print_last_error_message();
+        goto fail;
     }
 
     while(procs_size<=procs_size_used) {
         procs_size<<=1;
         free(procs);
 
-        if(!(procs=malloc(procs_size))) return 0;
+        if((procs=malloc(procs_size))==NULL) goto fail;
 
         if(!EnumProcesses(procs, procs_size, &procs_size_used)) {
             BLAME("[limit_procs] Error while enumerating processes!\n");
-            return 0;
+            print_last_error_message();
+            goto fail;
         }
     }
 
@@ -246,20 +252,33 @@ uint8_t limit_procs(JOBOBJECT_EXTENDED_LIMIT_INFORMATION *limits) {
         }
     }
 
+
     free(current_user_token);
+    current_user_token=NULL;
     free(procs);
+    procs=NULL;
 
     if(!SetInformationJobObject(job, JobObjectExtendedLimitInformation, limits,
                                 sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION))) {
         BLAME("[limit_procs] failed configuring limits!\n");
-        return 0;
+        goto fail;
     }
 
     CloseHandle(job);
+    job=NULL;
 #ifdef DEBUG
     puts("limits set");
 #endif
     return 1;
+
+fail:
+    if(job)
+        CloseHandle(job);
+    LocalFree(sid);
+    free(current_user_token);
+    free(procs);
+
+    return 0;
 }
 
 static inline void help_msg(const char *name) {
@@ -296,8 +315,8 @@ int main(int ac, char *as[]) {
         }
     }
 
-    limit_procs(limits);
+    const uint8_t r=limit_procs(limits);
 
     free(limits);
-    return EXIT_SUCCESS;
+    return r?EXIT_SUCCESS:EXIT_FAILURE;
 }
