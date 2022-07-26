@@ -1,5 +1,6 @@
 # wulimit
 ulimit for Windows.
+See releases for binaries.
 
 ## Building
 * install the mingw32 compiler (x86_64-w64-mingw32-gcc) and make
