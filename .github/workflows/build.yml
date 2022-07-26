@@ -13,7 +13,7 @@ jobs:
     
     steps:
     - name: install mingw
-      run: apt install -y gcc-mingw-w64-x86-64-win32
+      run: sudo apt install -y gcc-mingw-w64-x86-64-win32
     - uses: actions/checkout@v3
     - name: make
       run: make
